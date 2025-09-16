@@ -1,34 +1,7 @@
 import logging
 from django.utils.timezone import now
-from django.shortcuts import redirect
 
-from django.contrib.auth import logout
-from django.utils.deprecation import MiddlewareMixin
-from django.urls import reverse
-from django.conf import settings
-from django.middleware.locale import LocaleMiddleware
-from django.utils import translation
-logger = logging.getLogger('admin_logout_logger')
-
-class AutoLogoutMiddleware(MiddlewareMixin):
-    """
-    Middleware to log out users (except superusers) when they leave the admin area.
-    """
-    def process_request(self, request):
-        user = request.user
-        if user.is_authenticated:
-            is_admin_page = request.path.startswith('/admin')
-            if not user.is_superuser:
-                if not is_admin_page and request.session.get('admin_session'):
-                    logout(request)
-                    request.session.pop('admin_session', None)
-                    logger.info(f"User {user.username} has been logged out after leaving the admin area.")
-                elif is_admin_page:
-                    request.session['admin_session'] = True
-
-
-
-
+logger = logging.getLogger('page_access_logger')
 
 class LogRequestMiddleware:
     """
