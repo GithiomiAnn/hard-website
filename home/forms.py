@@ -2,6 +2,7 @@ from django import forms
 from django.forms import ModelForm
 import re
 from django.core.exceptions import ValidationError
+from django.core.validators import RegexValidator
 from django.contrib.auth.forms import UserCreationForm, AuthenticationForm, PasswordChangeForm, PasswordResetForm, SetPasswordForm, UsernameField
 from django.contrib.auth import get_user_model
 from captcha.fields import CaptchaField
@@ -9,14 +10,17 @@ from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
 from django.utils.timezone import now
 from datetime import timedelta
+from .models import VaultDocument
+from django.contrib.auth.models import Group
 import logging
 import nh3
+from django.contrib.auth import password_validation
 
-from .models import Student, Smishingdetection_join_us, Projects_join_us, Webpage, Project, Profile, Experience, UserBlogPage, SecurityEvent, JobApplication
+from .models import Student, Smishingdetection_join_us, Projects_join_us, Webpage, Project, Profile, Experience, UserBlogPage, SecurityEvent, JobApplication, CyberChallenge
 from .models import PenTestingRequest, SecureCodeReviewRequest
 from .validators import xss_detection
 from utils.sanitizer import clean_text, clean_email, clean_url, clean_html, clean_numeric
-
+import json
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
@@ -45,28 +49,6 @@ class RegistrationForm(UserCreationForm):
         label=_("Confirm Password"),
         widget=forms.PasswordInput(attrs={'class': 'form-control', 'placeholder': 'Confirm Password'}),
     )
-    # Newly added................................................
-    def clean_password1(self):
-        password = self.cleaned_data.get('password1')
-
-        # Check individual requirements - this matches the frontend validation
-        if len(password) < 8:
-            raise ValidationError(_("Password must be at least 8 characters long."))
-
-        if not re.search(r'[a-z]', password):
-            raise ValidationError(_("Password must include at least one lowercase letter."))
-
-        if not re.search(r'[A-Z]', password):
-            raise ValidationError(_("Password must include at least one uppercase letter."))
-
-        if not re.search(r'\d', password):
-            raise ValidationError(_("Password must include at least one number."))
-
-        if not re.search(r'[@$!%*?&]', password):
-            raise ValidationError(_("Password must include at least one special character (@, $, !, %, *, ?, &)."))
-
-        return password
-    # .........................................................
 
     # Keep strict Deakin email validation with debug logs
     def clean_email(self):
@@ -128,28 +110,6 @@ class ClientRegistrationForm(UserCreationForm):
         label=_("Confirm Password"),
         widget=forms.PasswordInput(attrs={'class': 'form-control', 'placeholder': 'Confirm Password'}),
     )
-    # Newly added................................................
-    def clean_password1(self):
-        password = self.cleaned_data.get('password1')
-
-        # Check individual requirements - this matches the frontend validation
-        if len(password) < 8:
-            raise ValidationError(_("Password must be at least 8 characters long."))
-
-        if not re.search(r'[a-z]', password):
-            raise ValidationError(_("Password must include at least one lowercase letter."))
-
-        if not re.search(r'[A-Z]', password):
-            raise ValidationError(_("Password must include at least one uppercase letter."))
-
-        if not re.search(r'\d', password):
-            raise ValidationError(_("Password must include at least one number."))
-
-        if not re.search(r'[@$!%*?&]', password):
-            raise ValidationError(_("Password must include at least one special character (@, $, !, %, *, ?, &)."))
-
-        return password
-    # .........................................................
 
     # Sanitized general email (business)
     def clean_email(self):
@@ -438,28 +398,57 @@ class UserUpdateForm(forms.ModelForm):
             'last_name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Last Name'}),
         }
 
+# Strict LinkedIn personal profile: https://www.linkedin.com/in/<slug>[/]
+linkedin_validator = RegexValidator(
+    regex=r"^https:\/\/(www\.)?linkedin\.com\/in\/[A-Za-z0-9\-_%]+\/?$",
+    message="Enter a valid LinkedIn personal profile URL (e.g., https://www.linkedin.com/in/your-handle).",
+    flags=re.IGNORECASE,
+)
+
+# GitHub username rules: 1–39 chars, alnum or hyphen, cannot start/end with hyphen
+# URL form: https://github.com/<username>[/]
+github_validator = RegexValidator(
+    regex=r"^https:\/\/(www\.)?github\.com\/([a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38})\/?$",
+    message="Enter a valid GitHub profile URL (e.g., https://github.com/username).",
+    flags=re.IGNORECASE,
+)
 
 class ProfileUpdateForm(forms.ModelForm):
-    def clean_bio(self):
-        return clean_html(self.cleaned_data.get('bio', ''))
+    # Override model fields so we can attach validators + widgets
+    linkedin = forms.URLField(
+        required=False,
+        validators=[linkedin_validator],
+        widget=forms.URLInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'LinkedIn Profile URL',
+            'pattern': r'https://(www\.)?linkedin\.com/in/[A-Za-z0-9\-_%]+/?',
+            'title': 'e.g., https://www.linkedin.com/in/your-handle'
+        })
+    )
 
-    def clean_linkedin(self):
-        return clean_url(self.cleaned_data.get('linkedin', ''))
-
-    def clean_github(self):
-        return clean_url(self.cleaned_data.get('github', ''))
-
-    def clean_location(self):
-        return clean_text(self.cleaned_data.get('location', ''))
+    github = forms.URLField(
+        required=False,
+        validators=[github_validator],
+        widget=forms.URLInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'GitHub Profile URL',
+            'pattern': r'https://(www\.)?github\.com/([a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38})/?',
+            'title': 'e.g., https://github.com/yourname'
+        })
+    )
 
     class Meta:
         model = Profile
         fields = ['avatar', 'bio', 'linkedin', 'github', 'location']
         widgets = {
-            'bio': forms.Textarea(attrs={'class': 'form-control', 'placeholder': 'Tell us about yourself'}),
-            'linkedin': forms.URLInput(attrs={'class': 'form-control', 'placeholder': 'LinkedIn Profile URL'}),
-            'github': forms.URLInput(attrs={'class': 'form-control', 'placeholder': 'GitHub Profile URL'}),
-            'location': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'City, Country'})
+            'bio': forms.Textarea(attrs={
+                'class': 'form-control',
+                'placeholder': 'Tell us about yourself'
+            }),
+            'location': forms.TextInput(attrs={
+                'class': 'form-control',
+                'placeholder': 'City, Country'
+            }),
         }
 
 
@@ -468,6 +457,10 @@ class CaptchaForm(forms.Form):
 
 
 class UserBlogPageForm(ModelForm):
+    image_url = forms.URLField(required=False, widget=forms.URLInput(attrs={
+        'class': 'form-control',
+        'placeholder': _('Image URL (Dropbox/shared link, optional)')
+    }))
     def clean_name(self):
         return clean_text(self.cleaned_data.get('name', ''))
 
@@ -484,6 +477,7 @@ class UserBlogPageForm(ModelForm):
             'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': _('Your name')}),
             'title': forms.Textarea(attrs={'class': 'form-control', 'placeholder': _('Your title'), 'rows': 2}),
             'description': forms.Textarea(attrs={'class': 'form-control', 'placeholder': _('Your description')}),
+            'file': forms.ClearableFileInput(attrs={'class': 'form-control', 'accept': 'image/*'})
         }
 
 
@@ -572,3 +566,155 @@ class SecureCodeReviewRequestForm(forms.ModelForm):
         model = SecureCodeReviewRequest
         fields = ['name', 'email', 'github_repo_link', 'terms_accepted']
 
+# Cyber Challenge Forms ------------------------------------------------------------
+
+class ChallengeForm(forms.ModelForm):
+    choices_text = forms.CharField(widget=forms.Textarea(attrs={'rows': 3, 'placeholder': 'Enter choices separated by newlines', 'class': 'form-control'}), required=False, help_text="for Multiple Choice Questions, Enter each choice per line"
+    )
+    class Meta:
+        model = CyberChallenge
+        fields = [
+            'title', 'description', 'question', 'explanation', 
+            'difficulty', 'category', 'points', 'challenge_type', 
+            'time_limit', 'correct_answer', 'starter_code', 
+            'sample_input', 'expected_output'
+        ]
+
+        widgets = {
+            'title': forms.TextInput(attrs={'class': 'form-control', 'placeholder': ' Enter challenge title'}),
+            'description': forms.Textarea(attrs={'class': 'form-control', 'rows': 3, 'placeholder': 'brief description of the challenge'}),
+            'question': forms.Textarea(attrs={'class': 'form-control', 'rows': 4, 'placeholder': 'Enter the challenge question'}),
+            'explanation': forms.Textarea(attrs={'class': 'form-control', 'rows': 3, 'placeholder': 'Explanation for the correct answer'}),
+            'difficulty': forms.Select(attrs={'class': 'form-control'}),
+            'category': forms.Select(attrs={'class': 'form-control'}),
+            'points': forms.NumberInput(attrs={'class': 'form-control', 'min': 1, 'max': 100}),
+            'challenge_type': forms.Select(attrs={'class': 'form-control', 'id': 'challenge-type-select'}),
+            'time_limit': forms.NumberInput(attrs={'class': 'form-control', 'min': 30, 'max': 333600, 'placeholder': 'Time in seconds'}),
+            'correct_answer': forms.Textarea(attrs={'class': 'form-control', 'rows': 4, 'placeholder': 'Enter the full correct code, not just what user inputs to fix'}),
+            'starter_code': forms.Textarea(attrs={'class': 'form-control', 'rows': 8, 'placeholder': 'def solution():\n    # Your code here\n    pass'}),
+            'sample_input': forms.Textarea(attrs={'class': 'form-control', 'rows': 3, 'placeholder': 'Sample input for code challenges'}),
+            'expected_output': forms.Textarea(attrs={'class': 'form-control', 'rows': 3, 'placeholder': 'Enter Complete Expected Output'}),
+        }
+        
+        labels = {
+            'title': 'Challenge Title',
+            'description': 'Description',
+            'question': 'Question/Problem Statement',
+            'explanation': 'Explanation',
+            'difficulty': 'Difficulty Level',
+            'category': 'Category',
+            'points': 'Points',
+            'challenge_type': 'Challenge Type',
+            'time_limit': 'Time Limit (seconds)',
+            'correct_answer': 'Correct Answer',
+            'starter_code': 'Starter Code (for Fix the Code challenges)',
+            'sample_input': 'Sample Input into code before running',
+            'expected_output': 'Expected Output of code after running',
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        # If editing an existing challenge, populate choices_text
+        if self.instance and self.instance.pk and self.instance.choices:
+            if isinstance(self.instance.choices, list):
+                self.fields['choices_text'].initial = '\n'.join(self.instance.choices)
+            elif isinstance(self.instance.choices, str):
+                try:
+                    choices_list = json.loads(self.instance.choices)
+                    self.fields['choices_text'].initial = '\n'.join(choices_list)
+                except (json.JSONDecodeError, TypeError):
+                    self.fields['choices_text'].initial = self.instance.choices
+
+    def clean_choices_text(self):
+        choices_text = self.cleaned_data.get('choices_text', '').strip()
+        challenge_type = self.cleaned_data.get('challenge_type')
+        
+        if challenge_type == 'mcq' and not choices_text:
+            raise forms.ValidationError("Choices are required for Multiple Choice questions.")
+        
+        return choices_text
+
+    def clean_correct_answer(self):
+        correct_answer = self.cleaned_data.get('correct_answer', '').strip()
+        challenge_type = self.cleaned_data.get('challenge_type')
+        
+        print(f"DEBUG: clean_correct_answer called")
+        print(f"DEBUG: challenge_type = {challenge_type}")
+        print(f"DEBUG: correct_answer (before processing) = {repr(correct_answer)}")
+        
+        if not correct_answer:
+            raise forms.ValidationError("Correct answer is required.")
+        
+        # Only MCQ challenges need JSON array format
+        if challenge_type == 'mcq':
+            try:
+                # Try to parse as JSON
+                parsed = json.loads(correct_answer)
+                if not isinstance(parsed, list):
+                    # If it's not a list, convert single answer to list format
+                    result = json.dumps([correct_answer])
+                    print(f"DEBUG: MCQ - converted to JSON array: {result}")
+                    return result
+                # check list not empty
+                if not parsed:
+                    raise forms.ValidationError("At least one correct answer is required.")
+                print(f"DEBUG: MCQ - already JSON array: {correct_answer}")
+                return correct_answer
+            except json.JSONDecodeError:
+                # If not json treat as single answer and convert to json list
+                result = json.dumps([correct_answer])
+                print(f"DEBUG: MCQ - JSON decode error, converted to array: {result}")
+                return result
+        
+        # For fix_code challenges, return the answer without JSON wrapping
+        print(f"DEBUG: fix_code - returning as-is: {repr(correct_answer)}")
+        return correct_answer
+
+    def clean_starter_code(self):
+        starter_code = self.cleaned_data.get('starter_code', '').strip()
+        challenge_type = self.cleaned_data.get('challenge_type')
+        
+        if challenge_type == 'fix_code' and not starter_code:
+            raise forms.ValidationError("Starter code is required for Fix the Code challenges.")
+        
+        return starter_code
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        
+        # Convert choices_text to JSON for multiple choice questions
+        choices_text = self.cleaned_data.get('choices_text', '').strip()
+        if choices_text and instance.challenge_type == 'mcq':
+            choices_list = [choice.strip() for choice in choices_text.split('\n') if choice.strip()]
+            instance.choices = choices_list
+        else:
+            instance.choices = None
+            
+        if commit:
+            instance.save()
+        return instance
+
+
+class VaultUploadForm(forms.ModelForm):
+    class Meta:
+        model = VaultDocument
+        fields = ['file', 'description', 'visibility', 'allowed_teams']  # NEW
+        widgets = {
+            'description': forms.TextInput(attrs={'placeholder': 'Optional description', 'class':'form-control'}),
+            'visibility': forms.Select(attrs={'class': 'form-select'}),  # NEW
+            'allowed_teams': forms.SelectMultiple(attrs={'class': 'form-select', 'size': '6'}),  # NEW
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # List all groups (teams). You can restrict to certain names if you wish.
+        self.fields['allowed_teams'].queryset = Group.objects.all().order_by('name')
+
+    def clean(self):
+        cleaned = super().clean()
+        vis = cleaned.get('visibility')
+        teams = cleaned.get('allowed_teams')
+        if vis == VaultDocument.VIS_TEAMS and (not teams or teams.count() == 0):
+            raise forms.ValidationError("Select at least one team for 'Selected teams' visibility.")
+        return cleaned
